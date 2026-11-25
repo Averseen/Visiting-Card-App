@@ -7,8 +7,8 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
 
-void main() => runApp(const MaterialApp(home: CardsPage()));
-
+void main() => runApp(const MaterialApp(
+    title: 'Visiting Card Holder', home: CardsPage()));
 // ---------- Database ----------
 class Db {
   static Database? _db;
