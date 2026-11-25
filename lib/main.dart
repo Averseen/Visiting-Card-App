@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
@@ -14,31 +15,66 @@ class Db {
 
   static Future<Database> get db async => _db ??= await openDatabase(
         p.join(await getDatabasesPath(), 'cards.db'),
-        version: 1,
+        version: 2,
         onCreate: (d, v) => d.execute('''CREATE TABLE cards(
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           name TEXT, company TEXT, phone TEXT, email TEXT,
-          website TEXT, address TEXT, raw TEXT, image TEXT)'''),
+          website TEXT, address TEXT, extra TEXT, raw TEXT, image TEXT)'''),
+        onUpgrade: (d, oldVersion, newVersion) async {
+          if (oldVersion < 2) {
+            await d.execute('ALTER TABLE cards ADD COLUMN extra TEXT');
+          }
+        },
       );
 
-  static Future<List<Map<String, Object?>>> search(String q) async {
+  static String orderFor(String sort) {
+    switch (sort) {
+      case 'company':
+        return "CASE WHEN company IS NULL OR TRIM(company) = '' "
+            'THEN 1 ELSE 0 END, company COLLATE NOCASE ASC';
+      case 'name':
+        return "CASE WHEN name IS NULL OR TRIM(name) = '' "
+            'THEN 1 ELSE 0 END, name COLLATE NOCASE ASC';
+      default:
+        return 'id DESC';
+    }
+  }
+
+  static Future<List<Map<String, Object?>>> search(String q,
+      {String orderBy = 'id DESC'}) async {
     final d = await db;
     q = q.trim();
-    if (q.isEmpty) return d.query('cards', orderBy: 'id DESC');
+    if (q.isEmpty) return d.query('cards', orderBy: orderBy);
     return d.query(
       'cards',
       where: 'name LIKE ? OR company LIKE ? OR phone LIKE ? OR email LIKE ? '
-          'OR website LIKE ? OR address LIKE ? OR raw LIKE ?',
-      whereArgs: List.filled(7, '%$q%'),
-      orderBy: 'id DESC',
+          'OR website LIKE ? OR address LIKE ? OR extra LIKE ? OR raw LIKE ?',
+      whereArgs: List.filled(8, '%$q%'),
+      orderBy: orderBy,
     );
   }
 
   static Future<void> insert(Map<String, Object?> m) async =>
       (await db).insert('cards', m);
 
+  static Future<void> update(int id, Map<String, Object?> m) async =>
+      (await db).update('cards', m, where: 'id = ?', whereArgs: [id]);
+
   static Future<void> delete(int id) async =>
       (await db).delete('cards', where: 'id = ?', whereArgs: [id]);
+}
+
+Map<String, String> decodeExtra(Object? raw) {
+  if (raw == null) return {};
+  final text = '$raw'.trim();
+  if (text.isEmpty) return {};
+  try {
+    final decoded = jsonDecode(text);
+    if (decoded is Map) {
+      return decoded.map((k, v) => MapEntry('$k', '${v ?? ''}'));
+    }
+  } catch (_) {}
+  return {};
 }
 
 // ---------- Parser ----------
@@ -88,6 +124,7 @@ class CardsPage extends StatefulWidget {
 class _CardsPageState extends State<CardsPage> {
   final _search = TextEditingController();
   List<Map<String, Object?>> _cards = [];
+  String _sort = 'newest';
 
   @override
   void initState() {
@@ -96,7 +133,7 @@ class _CardsPageState extends State<CardsPage> {
   }
 
   Future<void> _load() async {
-    final r = await Db.search(_search.text);
+    final r = await Db.search(_search.text, orderBy: Db.orderFor(_sort));
     if (mounted) setState(() => _cards = r);
   }
 
@@ -110,12 +147,17 @@ class _CardsPageState extends State<CardsPage> {
     final saved = await File(x.path).copy(
         p.join(dir.path, '${DateTime.now().millisecondsSinceEpoch}.jpg'));
     if (!mounted) return;
-    final data = await showDialog<Map<String, String>>(
+    final data = await showDialog<CardEditResult>(
       context: context,
-      builder: (_) => EditDialog(parseCard(res.text)),
+      builder: (_) => EditDialog(fields: parseCard(res.text)),
     );
     if (data == null) return;
-    await Db.insert({...data, 'raw': res.text, 'image': saved.path});
+    await Db.insert({
+      ...data.fields,
+      'extra': jsonEncode(data.extras),
+      'raw': res.text,
+      'image': saved.path,
+    });
     _load();
   }
 
@@ -143,36 +185,104 @@ class _CardsPageState extends State<CardsPage> {
         ),
       );
 
-  void _details(Map<String, Object?> c) => showDialog(
-        context: context,
-        builder: (_) => AlertDialog(
-          title: Text('${c['name']}'),
-          content: SingleChildScrollView(
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              if (c['image'] != null) Image.file(File('${c['image']}')),
-              const SizedBox(height: 8),
-              Text('Company: ${c['company']}'),
-              Text('Phone: ${c['phone']}'),
-              Text('Email: ${c['email']}'),
-              Text('Website: ${c['website']}'),
-              Text('Address: ${c['address']}'),
-            ]),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () async {
-                await Db.delete(c['id'] as int);
-                if (context.mounted) Navigator.pop(context);
-                _load();
-              },
-              child: const Text('Delete'),
+  Map<String, String> _fixedFieldsOf(Map<String, Object?> c) => {
+        for (final k in EditDialog.fieldOrder) k: '${c[k] ?? ''}',
+      };
+
+  Future<void> _details(Map<String, Object?> card) async {
+    var c = Map<String, Object?>.from(card);
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          final extras = decodeExtra(c['extra']);
+          return AlertDialog(
+            title: Text('${c['name'] ?? 'Card'}'),
+            content: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (c['image'] != null)
+                    Image.file(File('${c['image']}'),
+                        width: double.maxFinite, fit: BoxFit.contain),
+                  const SizedBox(height: 8),
+                  for (final k in EditDialog.fieldOrder)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 2),
+                      child: Text(
+                          '${EditDialog.fieldLabels[k]}: ${c[k] ?? ''}'),
+                    ),
+                  for (final e in extras.entries)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 2),
+                      child: Text('${e.key}: ${e.value}'),
+                    ),
+                ],
+              ),
             ),
-            TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('Close')),
-          ],
-        ),
-      );
+            actions: [
+              TextButton(
+                onPressed: () => _confirmDelete(dialogContext, c),
+                child: const Text('Delete'),
+              ),
+              TextButton(
+                onPressed: () async {
+                  final result = await showDialog<CardEditResult>(
+                    context: context,
+                    builder: (_) => EditDialog(
+                      fields: _fixedFieldsOf(c),
+                      extras: extras,
+                      title: 'Edit card',
+                    ),
+                  );
+                  if (result == null) return;
+                  final updated = {
+                    ...result.fields,
+                    'extra': jsonEncode(result.extras),
+                  };
+                  await Db.update(c['id'] as int, updated);
+                  c = {...c, ...updated};
+                  if (dialogContext.mounted) setDialogState(() {});
+                  _load();
+                },
+                child: const Text('Edit'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('Close'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  Future<void> _confirmDelete(
+      BuildContext dialogContext, Map<String, Object?> c) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete card?'),
+        content: Text(
+            'Delete "${c['name'] ?? 'this card'}"? This cannot be undone.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    await Db.delete(c['id'] as int);
+    if (dialogContext.mounted) Navigator.pop(dialogContext);
+    _load();
+  }
 
   @override
   Widget build(BuildContext context) => Scaffold(
@@ -183,6 +293,22 @@ class _CardsPageState extends State<CardsPage> {
             decoration: const InputDecoration(
                 hintText: 'Search cards...', border: InputBorder.none),
           ),
+          actions: [
+            PopupMenuButton<String>(
+              icon: const Icon(Icons.sort),
+              tooltip: 'Sort',
+              initialValue: _sort,
+              onSelected: (v) {
+                setState(() => _sort = v);
+                _load();
+              },
+              itemBuilder: (_) => const [
+                PopupMenuItem(value: 'newest', child: Text('Newest first')),
+                PopupMenuItem(value: 'company', child: Text('Company A-Z')),
+                PopupMenuItem(value: 'name', child: Text('Name A-Z')),
+              ],
+            ),
+          ],
         ),
         body: ListView.builder(
           itemCount: _cards.length,
@@ -202,36 +328,149 @@ class _CardsPageState extends State<CardsPage> {
       );
 }
 
+class CardEditResult {
+  final Map<String, String> fields;
+  final Map<String, String> extras;
+  const CardEditResult(this.fields, this.extras);
+}
+
+class _ExtraField {
+  final TextEditingController key;
+  final TextEditingController value;
+  _ExtraField(String k, String v)
+      : key = TextEditingController(text: k),
+        value = TextEditingController(text: v);
+
+  void dispose() {
+    key.dispose();
+    value.dispose();
+  }
+}
+
 class EditDialog extends StatefulWidget {
-  final Map<String, String> data;
-  const EditDialog(this.data, {super.key});
+  static const fieldOrder = [
+    'name',
+    'company',
+    'phone',
+    'email',
+    'website',
+    'address',
+  ];
+  static const fieldLabels = {
+    'name': 'Name',
+    'company': 'Company',
+    'phone': 'Phone',
+    'email': 'Email',
+    'website': 'Website',
+    'address': 'Address',
+  };
+
+  final Map<String, String> fields;
+  final Map<String, String> extras;
+  final String title;
+  const EditDialog({
+    super.key,
+    required this.fields,
+    this.extras = const {},
+    this.title = 'Verify details',
+  });
+
   @override
   State<EditDialog> createState() => _EditDialogState();
 }
 
 class _EditDialogState extends State<EditDialog> {
-  late final Map<String, TextEditingController> _c = {
-    for (final e in widget.data.entries) e.key: TextEditingController(text: e.value)
+  late final Map<String, TextEditingController> _fields = {
+    for (final k in EditDialog.fieldOrder)
+      k: TextEditingController(text: widget.fields[k] ?? ''),
   };
+  late final List<_ExtraField> _extras = [
+    for (final e in widget.extras.entries) _ExtraField(e.key, e.value),
+  ];
+
+  @override
+  void dispose() {
+    for (final c in _fields.values) {
+      c.dispose();
+    }
+    for (final e in _extras) {
+      e.dispose();
+    }
+    super.dispose();
+  }
+
+  CardEditResult _result() => CardEditResult(
+        {
+          for (final e in _fields.entries) e.key: e.value.text.trim(),
+        },
+        {
+          for (final e in _extras)
+            if (e.key.text.trim().isNotEmpty)
+              e.key.text.trim(): e.value.text.trim(),
+        },
+      );
 
   @override
   Widget build(BuildContext context) => AlertDialog(
-        title: const Text('Verify details'),
+        title: Text(widget.title),
         content: SingleChildScrollView(
-          child: Column(children: [
-            for (final e in _c.entries)
-              TextField(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              for (final e in _fields.entries)
+                TextField(
                   controller: e.value,
-                  decoration: InputDecoration(labelText: e.key)),
-          ]),
+                  decoration:
+                      InputDecoration(labelText: EditDialog.fieldLabels[e.key]),
+                ),
+              const SizedBox(height: 12),
+              const Text('Additional details',
+                  style: TextStyle(fontWeight: FontWeight.bold)),
+              for (var i = 0; i < _extras.length; i++)
+                Row(
+                  children: [
+                    Expanded(
+                      flex: 2,
+                      child: TextField(
+                        controller: _extras[i].key,
+                        decoration:
+                            const InputDecoration(labelText: 'Field name'),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      flex: 3,
+                      child: TextField(
+                        controller: _extras[i].value,
+                        decoration: const InputDecoration(labelText: 'Value'),
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.remove_circle_outline),
+                      onPressed: () {
+                        setState(() {
+                          _extras.removeAt(i).dispose();
+                        });
+                      },
+                    ),
+                  ],
+                ),
+              TextButton.icon(
+                onPressed: () => setState(() {
+                  _extras.add(_ExtraField('', ''));
+                }),
+                icon: const Icon(Icons.add),
+                label: const Text('Add field'),
+              ),
+            ],
+          ),
         ),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(context),
               child: const Text('Cancel')),
           TextButton(
-            onPressed: () => Navigator.pop(
-                context, {for (final e in _c.entries) e.key: e.value.text}),
+            onPressed: () => Navigator.pop(context, _result()),
             child: const Text('Save'),
           ),
         ],
