@@ -373,7 +373,7 @@ class _CardsPageState extends State<CardsPage> {
                 PopupMenuItem(value: 'newest', child: Text('Newest first')),
                 PopupMenuItem(value: 'name', child: Text('Name A-Z')),
                 PopupMenuItem(value: 'company', child: Text('Company A-Z')),
-                PopupMenuItem(value: 'work', child: Text('Work A-Z')),
+                PopupMenuItem(value: 'Work', child: Text('Work A-Z')),
               ],
             ),
           ],
