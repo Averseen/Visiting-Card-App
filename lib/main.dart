@@ -29,12 +29,12 @@ class Db {
 
   static String orderFor(String sort) {
     switch (sort) {
-      case 'name':
+      case 'Name':
         return "CASE WHEN name IS NULL OR TRIM(name) = '' "
             'THEN 1 ELSE 0 END, name COLLATE NOCASE ASC';
-      case 'name_desc':
-        return "CASE WHEN name IS NULL OR TRIM(name) = '' "
-            'THEN 1 ELSE 0 END, name COLLATE NOCASE DESC';
+      case 'Company':
+        return "CASE WHEN company IS NULL OR TRIM(company) = '' "
+            'THEN 1 ELSE 0 END, company COLLATE NOCASE ASC';
       default:
         return 'id DESC';
     }
@@ -139,12 +139,27 @@ class _CardsPageState extends State<CardsPage> {
     _load();
   }
 
+  List<Map<String, Object?>> _sortByWork(List<Map<String, Object?>> list) {
+    String key(Map<String, Object?> c) =>
+        decodeExtra(c['extra']).values.join(' ').trim().toLowerCase();
+    final sorted = List<Map<String, Object?>>.from(list);
+    sorted.sort((a, b) {
+      final ka = key(a), kb = key(b);
+      if (ka.isEmpty && kb.isEmpty) return 0;
+      if (ka.isEmpty) return 1;
+      if (kb.isEmpty) return -1;
+      return ka.compareTo(kb);
+    });
+    return sorted;
+  }
+
   bool _autoOpening = false;
 
   Future<void> _load({bool autoOpenSingle = false}) async {
     final q = _search.text;
     final order = Db.orderFor(_sort);
-    final r = await Db.search(q, orderBy: order);
+    var r = await Db.search(q, orderBy: order);
+    if (_sort == 'Work') r = _sortByWork(r);
     if (!mounted || q != _search.text || order != Db.orderFor(_sort)) return;
     setState(() => _cards = r);
     if (!autoOpenSingle || _autoOpening) return;
@@ -357,7 +372,8 @@ class _CardsPageState extends State<CardsPage> {
               itemBuilder: (_) => const [
                 PopupMenuItem(value: 'newest', child: Text('Newest first')),
                 PopupMenuItem(value: 'name', child: Text('Name A-Z')),
-                PopupMenuItem(value: 'name_desc', child: Text('Name Z-A')),
+                PopupMenuItem(value: 'company', child: Text('Company A-Z')),
+                PopupMenuItem(value: 'work', child: Text('Work A-Z')),
               ],
             ),
           ],
