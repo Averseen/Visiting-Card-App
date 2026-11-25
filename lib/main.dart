@@ -64,6 +64,12 @@ class Db {
       (await db).delete('cards', where: 'id = ?', whereArgs: [id]);
 }
 
+Map<String, String> sortedExtras(Map<String, String> m) {
+  final keys = m.keys.toList()
+    ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+  return {for (final k in keys) k: m[k]!};
+}
+
 Map<String, String> decodeExtra(Object? raw) {
   if (raw == null) return {};
   final text = '$raw'.trim();
@@ -71,7 +77,8 @@ Map<String, String> decodeExtra(Object? raw) {
   try {
     final decoded = jsonDecode(text);
     if (decoded is Map) {
-      return decoded.map((k, v) => MapEntry('$k', '${v ?? ''}'));
+      return sortedExtras(
+          decoded.map((k, v) => MapEntry('$k', '${v ?? ''}')));
     }
   } catch (_) {}
   return {};
@@ -132,9 +139,22 @@ class _CardsPageState extends State<CardsPage> {
     _load();
   }
 
-  Future<void> _load() async {
-    final r = await Db.search(_search.text, orderBy: Db.orderFor(_sort));
-    if (mounted) setState(() => _cards = r);
+  bool _autoOpening = false;
+
+  Future<void> _load({bool autoOpenSingle = false}) async {
+    final q = _search.text;
+    final order = Db.orderFor(_sort);
+    final r = await Db.search(q, orderBy: order);
+    if (!mounted || q != _search.text || order != Db.orderFor(_sort)) return;
+    setState(() => _cards = r);
+    if (!autoOpenSingle || _autoOpening) return;
+    if (q.trim().isEmpty || r.length != 1) return;
+    _autoOpening = true;
+    try {
+      await _details(r.first);
+    } finally {
+      _autoOpening = false;
+    }
   }
 
   Future<void> _scan(ImageSource src) async {
@@ -212,11 +232,16 @@ class _CardsPageState extends State<CardsPage> {
                       child: Text(
                           '${EditDialog.fieldLabels[k]}: ${c[k] ?? ''}'),
                     ),
-                  for (final e in extras.entries)
-                    Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 2),
-                      child: Text('${e.key}: ${e.value}'),
-                    ),
+                  if (extras.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    const Text('Work',
+                        style: TextStyle(fontWeight: FontWeight.bold)),
+                    for (final e in extras.entries)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 2),
+                        child: Text('${e.key}: ${e.value}'),
+                      ),
+                  ],
                 ],
               ),
             ),
@@ -289,9 +314,12 @@ class _CardsPageState extends State<CardsPage> {
         appBar: AppBar(
           title: TextField(
             controller: _search,
-            onChanged: (_) => _load(),
+            textInputAction: TextInputAction.search,
+            onChanged: (_) => _load(autoOpenSingle: true),
+            onSubmitted: (_) => _load(autoOpenSingle: true),
             decoration: const InputDecoration(
-                hintText: 'Search cards...', border: InputBorder.none),
+                hintText: 'Search name, company, or work...',
+                border: InputBorder.none),
           ),
           actions: [
             PopupMenuButton<String>(
@@ -385,7 +413,8 @@ class _EditDialogState extends State<EditDialog> {
       k: TextEditingController(text: widget.fields[k] ?? ''),
   };
   late final List<_ExtraField> _extras = [
-    for (final e in widget.extras.entries) _ExtraField(e.key, e.value),
+    for (final e in sortedExtras(widget.extras).entries)
+      _ExtraField(e.key, e.value),
   ];
 
   @override
@@ -403,11 +432,11 @@ class _EditDialogState extends State<EditDialog> {
         {
           for (final e in _fields.entries) e.key: e.value.text.trim(),
         },
-        {
+        sortedExtras({
           for (final e in _extras)
             if (e.key.text.trim().isNotEmpty)
               e.key.text.trim(): e.value.text.trim(),
-        },
+        }),
       );
 
   @override
@@ -424,7 +453,7 @@ class _EditDialogState extends State<EditDialog> {
                       InputDecoration(labelText: EditDialog.fieldLabels[e.key]),
                 ),
               const SizedBox(height: 12),
-              const Text('Additional details',
+              const Text('Work',
                   style: TextStyle(fontWeight: FontWeight.bold)),
               for (var i = 0; i < _extras.length; i++)
                 Row(
