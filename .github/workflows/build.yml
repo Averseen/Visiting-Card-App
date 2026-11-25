@@ -24,6 +24,11 @@ jobs:
           else
             sed -i 's/signingConfig signingConfigs.debug/signingConfig signingConfigs.debug\n            minifyEnabled false\n            shrinkResources false/' android/app/build.gradle
           fi
+      - name: Use stable debug keystore
+        run: |
+          mkdir -p ~/.android
+          base64 -d .github/debug.keystore.b64 > ~/.android/debug.keystore
+          chmod 600 ~/.android/debug.keystore
       - run: flutter pub get
       - run: flutter build apk --release
       - uses: actions/upload-artifact@v4

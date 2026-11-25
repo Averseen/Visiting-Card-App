@@ -29,12 +29,12 @@ class Db {
 
   static String orderFor(String sort) {
     switch (sort) {
-      case 'company':
-        return "CASE WHEN company IS NULL OR TRIM(company) = '' "
-            'THEN 1 ELSE 0 END, company COLLATE NOCASE ASC';
       case 'name':
         return "CASE WHEN name IS NULL OR TRIM(name) = '' "
             'THEN 1 ELSE 0 END, name COLLATE NOCASE ASC';
+      case 'name_desc':
+        return "CASE WHEN name IS NULL OR TRIM(name) = '' "
+            'THEN 1 ELSE 0 END, name COLLATE NOCASE DESC';
       default:
         return 'id DESC';
     }
@@ -181,6 +181,22 @@ class _CardsPageState extends State<CardsPage> {
     _load();
   }
 
+  Future<void> _addManual() async {
+    final data = await showDialog<CardEditResult>(
+      context: context,
+      builder: (_) =>
+          EditDialog(fields: const <String, String>{}, title: 'Add card'),
+    );
+    if (data == null) return;
+    await Db.insert({
+      ...data.fields,
+      'extra': jsonEncode(data.extras),
+      'raw': '',
+      'image': null,
+    });
+    _load();
+  }
+
   void _pickSource() => showModalBottomSheet(
         context: context,
         builder: (_) => SafeArea(
@@ -199,6 +215,14 @@ class _CardsPageState extends State<CardsPage> {
               onTap: () {
                 Navigator.pop(context);
                 _scan(ImageSource.gallery);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.person_add),
+              title: const Text('Add manually'),
+              onTap: () {
+                Navigator.pop(context);
+                _addManual();
               },
             ),
           ]),
@@ -332,8 +356,8 @@ class _CardsPageState extends State<CardsPage> {
               },
               itemBuilder: (_) => const [
                 PopupMenuItem(value: 'newest', child: Text('Newest first')),
-                PopupMenuItem(value: 'company', child: Text('Company A-Z')),
                 PopupMenuItem(value: 'name', child: Text('Name A-Z')),
+                PopupMenuItem(value: 'name_desc', child: Text('Name Z-A')),
               ],
             ),
           ],
@@ -350,8 +374,9 @@ class _CardsPageState extends State<CardsPage> {
           },
         ),
         floatingActionButton: FloatingActionButton(
+          tooltip: 'Add card',
           onPressed: _pickSource,
-          child: const Icon(Icons.add_a_photo),
+          child: const Icon(Icons.add),
         ),
       );
 }
