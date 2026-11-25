@@ -17,8 +17,15 @@ jobs:
         with:
           channel: stable
       - run: flutter create --platforms=android --project-name visiting_card_app .
+      - name: Disable R8 minify
+        run: |
+          if [ -f android/app/build.gradle.kts ]; then
+            sed -i 's/signingConfig = signingConfigs.getByName("debug")/signingConfig = signingConfigs.getByName("debug")\n            isMinifyEnabled = false\n            isShrinkResources = false/' android/app/build.gradle.kts
+          else
+            sed -i 's/signingConfig signingConfigs.debug/signingConfig signingConfigs.debug\n            minifyEnabled false\n            shrinkResources false/' android/app/build.gradle
+          fi
       - run: flutter pub get
-      - run: flutter build apk --release --no-shrink
+      - run: flutter build apk --release
       - uses: actions/upload-artifact@v4
         with:
           name: visiting-card-apk
