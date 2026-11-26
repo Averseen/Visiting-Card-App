@@ -371,8 +371,8 @@ class _CardsPageState extends State<CardsPage> {
               },
               itemBuilder: (_) => const [
                 PopupMenuItem(value: 'newest', child: Text('Newest first')),
-                PopupMenuItem(value: 'name', child: Text('Name A-Z')),
-                PopupMenuItem(value: 'company', child: Text('Company A-Z')),
+                PopupMenuItem(value: 'Name', child: Text('Name A-Z')),
+                PopupMenuItem(value: 'Company', child: Text('Company A-Z')),
                 PopupMenuItem(value: 'Work', child: Text('Work A-Z')),
               ],
             ),
