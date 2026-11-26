@@ -21,6 +21,13 @@ int cmp(String a, String b) {
   return a.compareTo(b);
 }
 
+String fullName(Map<String, Object?> c) {
+  final t = s(c['title']);
+  final n = s(c['name']);
+  if (n.isEmpty) return '';
+  return t.isEmpty ? n : '$t $n';
+}
+
 Map<String, String> decodeExtra(Object? raw) {
   final text = s(raw);
   if (text.isEmpty) return {};
@@ -54,11 +61,11 @@ class Db {
 
   static Future<Database> get db async => _db ??= await openDatabase(
         p.join(await getDatabasesPath(), 'cards.db'),
-        version: 3,
+        version: 4,
         onCreate: (d, v) => d.execute('''CREATE TABLE cards(
           id INTEGER PRIMARY KEY AUTOINCREMENT,
-          name TEXT, company TEXT, designation TEXT, phone TEXT, email TEXT,
-          website TEXT, address TEXT, works TEXT, remark TEXT,
+          title TEXT, name TEXT, company TEXT, designation TEXT, phone TEXT,
+          email TEXT, website TEXT, address TEXT, works TEXT, remark TEXT,
           extra TEXT, raw TEXT, image TEXT)'''),
         onUpgrade: (d, oldV, newV) async {
           if (oldV < 2) {
@@ -80,6 +87,9 @@ class Db {
               await d.update('cards', {'works': jsonEncode(list)},
                   where: 'id = ?', whereArgs: [r['id']]);
             }
+          }
+          if (oldV < 4) {
+            await d.execute('ALTER TABLE cards ADD COLUMN title TEXT');
           }
         },
       );
@@ -193,6 +203,7 @@ Map<String, String> parseCard(RecognizedText rt) {
   var desig = '';
   var company = '';
   var name = '';
+  var title = '';
   final addr = <String>[];
   final rest = <_L>[];
   for (final l in lines) {
@@ -222,8 +233,7 @@ Map<String, String> parseCard(RecognizedText rt) {
   _L? nameLine;
   if (cands.isNotEmpty) {
     if (di >= 0) {
-      cands.sort(
-          (a, b) => (a.i - di).abs().compareTo((b.i - di).abs()));
+      cands.sort((a, b) => (a.i - di).abs().compareTo((b.i - di).abs()));
     }
     nameLine = cands.first;
   } else if (rest.isNotEmpty) {
@@ -233,12 +243,18 @@ Map<String, String> parseCard(RecognizedText rt) {
     name = nameLine.t;
     rest.remove(nameLine);
   }
+  final tm = RegExp(r'^(mr|mrs)\.?\s+', caseSensitive: false).firstMatch(name);
+  if (tm != null) {
+    title = tm.group(1)!.toLowerCase() == 'mr' ? 'Mr.' : 'Mrs.';
+    name = name.substring(tm.end).trim();
+  }
   if (company.isEmpty && rest.isNotEmpty) {
     rest.sort((a, b) => b.h.compareTo(a.h));
     company = rest.first.t;
   }
 
   return {
+    'title': title,
     'name': name,
     'company': company,
     'designation': desig,
@@ -251,6 +267,13 @@ Map<String, String> parseCard(RecognizedText rt) {
 }
 
 // ---------- UI ----------
+const _sortOpts = {
+  'newest': 'Newest first',
+  'name': 'Name A-Z',
+  'company': 'Company A-Z',
+  'work': 'Work A-Z',
+};
+
 class _Header {
   final String title;
   final int count;
@@ -417,8 +440,19 @@ class _CardsPageState extends State<CardsPage> {
           final works = decodeWorks(c['works']);
           final img = s(c['image']);
           final hasImg = img.isNotEmpty && File(img).existsSync();
+          final nm = fullName(c);
+          final lines = <String>[];
+          if (nm.isNotEmpty) lines.add('Name: $nm');
+          for (final k in EditDialog.fieldOrder) {
+            if (k == 'name') continue;
+            if (k == 'remark' && works.isNotEmpty) {
+              lines.add('Work: ${works.join(', ')}');
+            }
+            final v = s(c[k]);
+            if (v.isNotEmpty) lines.add('${EditDialog.fieldLabels[k]}: $v');
+          }
           return AlertDialog(
-            title: Text(s(c['name']).isEmpty ? 'Card' : s(c['name'])),
+            title: Text(nm.isEmpty ? 'Card' : nm),
             content: SingleChildScrollView(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -440,16 +474,10 @@ class _CardsPageState extends State<CardsPage> {
                               TextStyle(fontSize: 12, color: Colors.black54)),
                     ),
                   const SizedBox(height: 8),
-                  for (final k in EditDialog.fieldOrder)
-                    if (k != 'name' && s(c[k]).isNotEmpty)
-                      Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 2),
-                        child: Text('${EditDialog.fieldLabels[k]}: ${s(c[k])}'),
-                      ),
-                  if (works.isNotEmpty)
+                  for (final l in lines)
                     Padding(
                       padding: const EdgeInsets.symmetric(vertical: 2),
-                      child: Text('Work: ${works.join(', ')}'),
+                      child: Text(l),
                     ),
                 ],
               ),
@@ -466,6 +494,7 @@ class _CardsPageState extends State<CardsPage> {
                     builder: (_) => EditDialog(
                       fields: {
                         for (final k in EditDialog.fieldOrder) k: s(c[k]),
+                        'title': s(c['title']),
                       },
                       works: works,
                       title: 'Edit card',
@@ -496,12 +525,13 @@ class _CardsPageState extends State<CardsPage> {
 
   Future<void> _confirmDelete(
       BuildContext dialogContext, Map<String, Object?> c) async {
+    final nm = fullName(c);
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Delete card?'),
         content: Text(
-            'Delete "${s(c['name']).isEmpty ? 'this card' : s(c['name'])}"? This cannot be undone.'),
+            'Delete "${nm.isEmpty ? 'this card' : nm}"? This cannot be undone.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
@@ -520,65 +550,34 @@ class _CardsPageState extends State<CardsPage> {
     _load();
   }
 
-  Widget _sortBar() {
-    const opts = {
-      'newest': 'Newest first',
-      'name': 'Name A-Z',
-      'company': 'Company A-Z',
-      'work': 'Work A-Z',
-    };
-    return SizedBox(
-      height: 52,
-      child: ListView(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-        children: [
-          for (final e in opts.entries)
-            Padding(
-              padding: const EdgeInsets.only(right: 8),
-              child: ChoiceChip(
-                label: Text(e.value),
-                selected: _sort == e.key,
-                onSelected: (_) {
-                  _sort = e.key;
-                  setState(() => _rows = _buildRows(_cards));
-                },
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-
   Widget _header(_Header h) => Container(
         width: double.infinity,
-        color: Colors.indigo.shade50,
+        color: Colors.grey.shade200,
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         child: Text('${h.title}  (${h.count})',
-            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            style: const TextStyle(fontSize: 15)),
       );
 
   Widget _tile(Map<String, Object?> c) {
-    final lines = [
-      s(c['company']),
-      s(c['designation']),
-      s(c['phone']),
-      s(c['email']),
-    ].where((e) => e.isNotEmpty).toList();
+    final company = s(c['company']);
+    final nm = fullName(c);
+    final ph = s(c['phone']);
+    final line2 = nm.isEmpty ? ph : (ph.isEmpty ? nm : '$nm - $ph');
     return Column(children: [
       InkWell(
         onTap: () => _details(c),
         child: Container(
           width: double.infinity,
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(s(c['name']).isEmpty ? '(no name)' : s(c['name']),
-                  style: const TextStyle(
-                      fontSize: 16, fontWeight: FontWeight.w600)),
-              for (final l in lines)
-                Text(l, style: const TextStyle(color: Colors.black54)),
+              Text(company.isEmpty ? '(no company)' : company,
+                  style: const TextStyle(fontSize: 16)),
+              if (line2.isNotEmpty)
+                Text(line2,
+                    style:
+                        const TextStyle(fontSize: 14, color: Colors.black54)),
             ],
           ),
         ),
@@ -596,24 +595,35 @@ class _CardsPageState extends State<CardsPage> {
             onChanged: (_) => _load(autoOpenSingle: true),
             onSubmitted: (_) => _load(autoOpenSingle: true),
             decoration: const InputDecoration(
-                hintText: 'Search name, company, work...',
+                hintText: 'Search name, company, or work...',
                 border: InputBorder.none),
           ),
-        ),
-        body: Column(
-          children: [
-            _sortBar(),
-            Expanded(
-              child: ListView.builder(
-                itemCount: _rows.length,
-                itemBuilder: (_, i) {
-                  final r = _rows[i];
-                  if (r is _Header) return _header(r);
-                  return _tile(r as Map<String, Object?>);
-                },
-              ),
+          actions: [
+            PopupMenuButton<String>(
+              icon: const Icon(Icons.sort),
+              tooltip: 'Sort',
+              onSelected: (v) {
+                _sort = v;
+                setState(() => _rows = _buildRows(_cards));
+              },
+              itemBuilder: (_) => <PopupMenuEntry<String>>[
+                for (final e in _sortOpts.entries)
+                  CheckedPopupMenuItem<String>(
+                    value: e.key,
+                    checked: _sort == e.key,
+                    child: Text(e.value),
+                  ),
+              ],
             ),
           ],
+        ),
+        body: ListView.builder(
+          itemCount: _rows.length,
+          itemBuilder: (_, i) {
+            final r = _rows[i];
+            if (r is _Header) return _header(r);
+            return _tile(r as Map<String, Object?>);
+          },
         ),
         floatingActionButton: FloatingActionButton(
           tooltip: 'Add card',
@@ -695,6 +705,10 @@ class _EditDialogState extends State<EditDialog> {
     for (final w in widget.works) TextEditingController(text: w),
     if (widget.works.isEmpty) TextEditingController(),
   ];
+  late String _title = (widget.fields['title'] == 'Mr.' ||
+          widget.fields['title'] == 'Mrs.')
+      ? widget.fields['title']!
+      : '';
 
   @override
   void dispose() {
@@ -715,7 +729,10 @@ class _EditDialogState extends State<EditDialog> {
       if (t.isNotEmpty && seen.add(t.toLowerCase())) ws.add(t);
     }
     return CardEditResult(
-      {for (final e in _fields.entries) e.key: e.value.text.trim()},
+      {
+        'title': _title,
+        for (final e in _fields.entries) e.key: e.value.text.trim(),
+      },
       ws,
     );
   }
@@ -727,6 +744,22 @@ class _EditDialogState extends State<EditDialog> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              InputDecorator(
+                decoration: const InputDecoration(labelText: 'Title'),
+                child: DropdownButtonHideUnderline(
+                  child: DropdownButton<String>(
+                    value: _title,
+                    isDense: true,
+                    isExpanded: true,
+                    items: const [
+                      DropdownMenuItem(value: '', child: Text('-')),
+                      DropdownMenuItem(value: 'Mr.', child: Text('Mr.')),
+                      DropdownMenuItem(value: 'Mrs.', child: Text('Mrs.')),
+                    ],
+                    onChanged: (v) => setState(() => _title = v ?? ''),
+                  ),
+                ),
+              ),
               for (final e in _fields.entries)
                 if (e.key != 'remark')
                   TextField(
@@ -735,8 +768,7 @@ class _EditDialogState extends State<EditDialog> {
                         labelText: EditDialog.fieldLabels[e.key]),
                   ),
               const SizedBox(height: 12),
-              const Text('Work',
-                  style: TextStyle(fontWeight: FontWeight.bold)),
+              const Text('Work'),
               for (var i = 0; i < _works.length; i++)
                 Row(
                   children: [
