@@ -7,50 +7,94 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
 
-void main() => runApp(const MaterialApp(
-    title: 'Visiting Card Holder', home: CardsPage()));
+void main() =>
+    runApp(const MaterialApp(title: 'Visiting Card Holder', home: CardsPage()));
+
+String s(Object? v) => '${v ?? ''}'.trim();
+
+int cmp(String a, String b) {
+  a = a.trim().toLowerCase();
+  b = b.trim().toLowerCase();
+  if (a.isEmpty && b.isEmpty) return 0;
+  if (a.isEmpty) return 1;
+  if (b.isEmpty) return -1;
+  return a.compareTo(b);
+}
+
+Map<String, String> decodeExtra(Object? raw) {
+  final text = s(raw);
+  if (text.isEmpty) return {};
+  try {
+    final decoded = jsonDecode(text);
+    if (decoded is Map) {
+      return decoded.map((k, v) => MapEntry('$k', '${v ?? ''}'));
+    }
+  } catch (_) {}
+  return {};
+}
+
+List<String> decodeWorks(Object? raw) {
+  final text = s(raw);
+  if (text.isEmpty) return [];
+  try {
+    final decoded = jsonDecode(text);
+    if (decoded is List) {
+      return decoded
+          .map((e) => '$e'.trim())
+          .where((e) => e.isNotEmpty)
+          .toList();
+    }
+  } catch (_) {}
+  return [];
+}
+
 // ---------- Database ----------
 class Db {
   static Database? _db;
 
   static Future<Database> get db async => _db ??= await openDatabase(
         p.join(await getDatabasesPath(), 'cards.db'),
-        version: 2,
+        version: 3,
         onCreate: (d, v) => d.execute('''CREATE TABLE cards(
           id INTEGER PRIMARY KEY AUTOINCREMENT,
-          name TEXT, company TEXT, phone TEXT, email TEXT,
-          website TEXT, address TEXT, extra TEXT, raw TEXT, image TEXT)'''),
-        onUpgrade: (d, oldVersion, newVersion) async {
-          if (oldVersion < 2) {
+          name TEXT, company TEXT, designation TEXT, phone TEXT, email TEXT,
+          website TEXT, address TEXT, works TEXT, remark TEXT,
+          extra TEXT, raw TEXT, image TEXT)'''),
+        onUpgrade: (d, oldV, newV) async {
+          if (oldV < 2) {
             await d.execute('ALTER TABLE cards ADD COLUMN extra TEXT');
+          }
+          if (oldV < 3) {
+            await d.execute('ALTER TABLE cards ADD COLUMN designation TEXT');
+            await d.execute('ALTER TABLE cards ADD COLUMN works TEXT');
+            await d.execute('ALTER TABLE cards ADD COLUMN remark TEXT');
+            final rows = await d.query('cards', columns: ['id', 'extra']);
+            for (final r in rows) {
+              final old = decodeExtra(r['extra']);
+              final list = <String>[];
+              for (final e in old.entries) {
+                final v = e.value.trim();
+                final t = v.isNotEmpty ? v : e.key.trim();
+                if (t.isNotEmpty) list.add(t);
+              }
+              await d.update('cards', {'works': jsonEncode(list)},
+                  where: 'id = ?', whereArgs: [r['id']]);
+            }
           }
         },
       );
 
-  static String orderFor(String sort) {
-    switch (sort) {
-      case 'Name':
-        return "CASE WHEN name IS NULL OR TRIM(name) = '' "
-            'THEN 1 ELSE 0 END, name COLLATE NOCASE ASC';
-      case 'Company':
-        return "CASE WHEN company IS NULL OR TRIM(company) = '' "
-            'THEN 1 ELSE 0 END, company COLLATE NOCASE ASC';
-      default:
-        return 'id DESC';
-    }
-  }
-
-  static Future<List<Map<String, Object?>>> search(String q,
-      {String orderBy = 'id DESC'}) async {
+  static Future<List<Map<String, Object?>>> search(String q) async {
     final d = await db;
     q = q.trim();
-    if (q.isEmpty) return d.query('cards', orderBy: orderBy);
+    if (q.isEmpty) return d.query('cards', orderBy: 'id DESC');
     return d.query(
       'cards',
-      where: 'name LIKE ? OR company LIKE ? OR phone LIKE ? OR email LIKE ? '
-          'OR website LIKE ? OR address LIKE ? OR extra LIKE ? OR raw LIKE ?',
-      whereArgs: List.filled(8, '%$q%'),
-      orderBy: orderBy,
+      where: 'name LIKE ? OR company LIKE ? OR designation LIKE ? '
+          'OR phone LIKE ? OR email LIKE ? OR website LIKE ? '
+          'OR address LIKE ? OR works LIKE ? OR remark LIKE ? OR raw LIKE ?',
+      whereArgs: List.filled(10, '%$q%'),
+      orderBy: 'id DESC',
     );
   }
 
@@ -64,64 +108,155 @@ class Db {
       (await db).delete('cards', where: 'id = ?', whereArgs: [id]);
 }
 
-Map<String, String> sortedExtras(Map<String, String> m) {
-  final keys = m.keys.toList()
-    ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
-  return {for (final k in keys) k: m[k]!};
-}
-
-Map<String, String> decodeExtra(Object? raw) {
-  if (raw == null) return {};
-  final text = '$raw'.trim();
-  if (text.isEmpty) return {};
-  try {
-    final decoded = jsonDecode(text);
-    if (decoded is Map) {
-      return sortedExtras(
-          decoded.map((k, v) => MapEntry('$k', '${v ?? ''}')));
-    }
-  } catch (_) {}
-  return {};
-}
-
 // ---------- Parser ----------
-Map<String, String> parseCard(String text) {
-  final lines =
-      text.split('\n').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
-  final email =
-      RegExp(r'[\w.+-]+@[\w-]+\.[\w.-]+').firstMatch(text)?.group(0) ?? '';
-  final web = RegExp(r'(https?://|www\.)[^\s]+', caseSensitive: false)
-          .firstMatch(text)
-          ?.group(0) ??
-      '';
-  final phones = RegExp(r'\+?\d[\d\s\-()]{7,}\d')
-      .allMatches(text)
-      .map((m) => m.group(0)!.trim())
-      .toList();
+const _desigWords = [
+  'manager', 'director', 'engineer', 'founder', 'ceo', 'cfo', 'cto', 'coo',
+  'owner', 'proprietor', 'proprietress', 'partner', 'sales', 'executive',
+  'president', 'vice', 'officer', 'consultant', 'head', 'supervisor',
+  'designer', 'developer', 'chairman', 'secretary', 'accountant',
+  'architect', 'advisor', 'associate', 'representative', 'marketing',
+  'md', 'gm', 'agm', 'dgm', 'incharge', 'coordinator', 'technician',
+];
+const _companyWords = [
+  'pvt', 'ltd', 'limited', 'llp', 'inc', 'corp', 'corporation', 'company',
+  'enterprises', 'enterprise', 'industries', 'solutions', 'technologies',
+  'technology', 'systems', 'services', 'traders', 'trading', 'associates',
+  'group', 'consultants', 'engineers', 'works', 'stores', 'agency',
+  'agencies', 'infra', 'constructions', 'construction', 'builders',
+  'electricals', 'electronics', 'motors', 'textiles', 'exports', 'imports',
+  'laboratories', 'labs', 'studio', 'international', 'global',
+];
+const _addrWords = [
+  'road', 'street', 'nagar', 'floor', 'sector', 'plot', 'block', 'colony',
+  'lane', 'near', 'opp', 'opposite', 'building', 'tower', 'complex',
+  'estate', 'area', 'city', 'district', 'dist', 'state', 'india', 'pin',
+];
 
-  bool isContact(String l) =>
-      l.contains('@') ||
-      l.toLowerCase().contains('www') ||
-      l.toLowerCase().startsWith('http') ||
+class _L {
+  final String t;
+  final double h;
+  final int i;
+  _L(this.t, this.h, this.i);
+}
+
+bool _hasWord(String t, List<String> words) {
+  for (final m in RegExp(r'[a-z]+').allMatches(t.toLowerCase())) {
+    if (words.contains(m.group(0))) return true;
+  }
+  return false;
+}
+
+bool _nameLike(String t) {
+  final c = t.replaceFirst(
+      RegExp(r'^(mr|mrs|ms|dr|er|ca|adv|prof|shri|smt)\.?\s+',
+          caseSensitive: false),
+      '');
+  if (!RegExp(r"^[A-Za-z][A-Za-z.' ]+$").hasMatch(c)) return false;
+  final n = c.trim().split(RegExp(r'\s+')).length;
+  return n >= 2 && n <= 4;
+}
+
+Map<String, String> parseCard(RecognizedText rt) {
+  final lines = <_L>[];
+  var idx = 0;
+  for (final b in rt.blocks) {
+    for (final l in b.lines) {
+      final t = l.text.trim();
+      if (t.isNotEmpty) lines.add(_L(t, l.boundingBox.height, idx++));
+    }
+  }
+  final text = lines.map((l) => l.t).join('\n');
+
+  final emailRe = RegExp(r'[\w.+-]+@[\w-]+\.[\w.-]+');
+  final webRe = RegExp(r'(https?://|www\.)[^\s]+', caseSensitive: false);
+  final phoneRe = RegExp(r'\+?\d[\d \-().]{7,}\d');
+  final labelRe = RegExp(
+      r'^(tel|ph|phone|mob|mobile|cell|fax|email|e-mail|web|website)\b',
+      caseSensitive: false);
+
+  final email = emailRe.firstMatch(text)?.group(0) ?? '';
+  final web = webRe.firstMatch(text)?.group(0) ?? '';
+  final phones = <String>[];
+  for (final m in phoneRe.allMatches(text)) {
+    final v = m.group(0)!.trim();
+    final digits = v.replaceAll(RegExp(r'\D'), '').length;
+    if (digits >= 8 && digits <= 15 && !phones.contains(v)) phones.add(v);
+  }
+
+  bool hasContact(String l) =>
+      emailRe.hasMatch(l) ||
+      webRe.hasMatch(l) ||
+      l.toLowerCase().contains('www.') ||
+      labelRe.hasMatch(l) ||
       phones.any((ph) => l.contains(ph));
 
-  final plain =
-      lines.where((l) => !isContact(l) && !RegExp(r'\d').hasMatch(l)).toList();
-  final address = lines
-      .where((l) => !isContact(l) && RegExp(r'\d').hasMatch(l))
-      .join(', ');
+  var desig = '';
+  var company = '';
+  var name = '';
+  final addr = <String>[];
+  final rest = <_L>[];
+  for (final l in lines) {
+    final t = l.t;
+    if (hasContact(t)) continue;
+    final hasDigit = RegExp(r'\d').hasMatch(t);
+    if (desig.isEmpty && !hasDigit && _hasWord(t, _desigWords)) {
+      desig = t;
+      continue;
+    }
+    if (company.isEmpty && _hasWord(t, _companyWords)) {
+      company = t;
+      continue;
+    }
+    if (hasDigit || _hasWord(t, _addrWords)) {
+      addr.add(t.replaceFirst(
+          RegExp(r'^(address|addr|add|office|off)\s*[:\-.]\s*',
+              caseSensitive: false),
+          ''));
+      continue;
+    }
+    rest.add(l);
+  }
+
+  final di = desig.isEmpty ? -1 : lines.indexWhere((l) => l.t == desig);
+  final cands = rest.where((l) => _nameLike(l.t)).toList();
+  _L? nameLine;
+  if (cands.isNotEmpty) {
+    if (di >= 0) {
+      cands.sort(
+          (a, b) => (a.i - di).abs().compareTo((b.i - di).abs()));
+    }
+    nameLine = cands.first;
+  } else if (rest.isNotEmpty) {
+    nameLine = rest.first;
+  }
+  if (nameLine != null) {
+    name = nameLine.t;
+    rest.remove(nameLine);
+  }
+  if (company.isEmpty && rest.isNotEmpty) {
+    rest.sort((a, b) => b.h.compareTo(a.h));
+    company = rest.first.t;
+  }
 
   return {
-    'name': plain.isNotEmpty ? plain[0] : '',
-    'company': plain.length > 1 ? plain[1] : '',
+    'name': name,
+    'company': company,
+    'designation': desig,
     'phone': phones.join(', '),
     'email': email,
     'website': web,
-    'address': address,
+    'address': addr.join(', '),
+    'remark': '',
   };
 }
 
 // ---------- UI ----------
+class _Header {
+  final String title;
+  final int count;
+  _Header(this.title, this.count);
+}
+
 class CardsPage extends StatefulWidget {
   const CardsPage({super.key});
   @override
@@ -131,7 +266,9 @@ class CardsPage extends StatefulWidget {
 class _CardsPageState extends State<CardsPage> {
   final _search = TextEditingController();
   List<Map<String, Object?>> _cards = [];
+  List<Object> _rows = [];
   String _sort = 'newest';
+  bool _autoOpening = false;
 
   @override
   void initState() {
@@ -139,29 +276,56 @@ class _CardsPageState extends State<CardsPage> {
     _load();
   }
 
-  List<Map<String, Object?>> _sortByWork(List<Map<String, Object?>> list) {
-    String key(Map<String, Object?> c) =>
-        decodeExtra(c['extra']).values.join(' ').trim().toLowerCase();
-    final sorted = List<Map<String, Object?>>.from(list);
-    sorted.sort((a, b) {
-      final ka = key(a), kb = key(b);
-      if (ka.isEmpty && kb.isEmpty) return 0;
-      if (ka.isEmpty) return 1;
-      if (kb.isEmpty) return -1;
-      return ka.compareTo(kb);
-    });
-    return sorted;
+  List<Object> _buildRows(List<Map<String, Object?>> list) {
+    final items = List<Map<String, Object?>>.from(list);
+    if (_sort == 'name') {
+      items.sort((a, b) => cmp(s(a['name']), s(b['name'])));
+      return List<Object>.from(items);
+    }
+    if (_sort == 'company') {
+      items.sort((a, b) => cmp(s(a['company']), s(b['company'])));
+      return List<Object>.from(items);
+    }
+    if (_sort == 'work') {
+      final groups = <String, List<Map<String, Object?>>>{};
+      final titles = <String, String>{};
+      for (final c in items) {
+        var ws = decodeWorks(c['works']);
+        if (ws.isEmpty) ws = ['No work'];
+        final seen = <String>{};
+        for (final w in ws) {
+          final k = w.toLowerCase();
+          if (!seen.add(k)) continue;
+          titles.putIfAbsent(k, () => w);
+          groups.putIfAbsent(k, () => []).add(c);
+        }
+      }
+      final keys = groups.keys.toList()
+        ..sort((a, b) {
+          if (a == 'no work') return b == 'no work' ? 0 : 1;
+          if (b == 'no work') return -1;
+          return a.compareTo(b);
+        });
+      final rows = <Object>[];
+      for (final k in keys) {
+        final g = groups[k]!;
+        g.sort((a, b) => cmp(s(a['company']), s(b['company'])));
+        rows.add(_Header(titles[k]!, g.length));
+        rows.addAll(g);
+      }
+      return rows;
+    }
+    return List<Object>.from(items);
   }
-
-  bool _autoOpening = false;
 
   Future<void> _load({bool autoOpenSingle = false}) async {
     final q = _search.text;
-    final order = Db.orderFor(_sort);
-    var r = await Db.search(q, orderBy: order);
-    if (_sort == 'Work') r = _sortByWork(r);
-    if (!mounted || q != _search.text || order != Db.orderFor(_sort)) return;
-    setState(() => _cards = r);
+    final r = await Db.search(q);
+    if (!mounted || q != _search.text) return;
+    setState(() {
+      _cards = r;
+      _rows = _buildRows(r);
+    });
     if (!autoOpenSingle || _autoOpening) return;
     if (q.trim().isEmpty || r.length != 1) return;
     _autoOpening = true;
@@ -184,12 +348,12 @@ class _CardsPageState extends State<CardsPage> {
     if (!mounted) return;
     final data = await showDialog<CardEditResult>(
       context: context,
-      builder: (_) => EditDialog(fields: parseCard(res.text)),
+      builder: (_) => EditDialog(fields: parseCard(res)),
     );
     if (data == null) return;
     await Db.insert({
       ...data.fields,
-      'extra': jsonEncode(data.extras),
+      'works': jsonEncode(data.works),
       'raw': res.text,
       'image': saved.path,
     });
@@ -205,7 +369,7 @@ class _CardsPageState extends State<CardsPage> {
     if (data == null) return;
     await Db.insert({
       ...data.fields,
-      'extra': jsonEncode(data.extras),
+      'works': jsonEncode(data.works),
       'raw': '',
       'image': null,
     });
@@ -244,43 +408,49 @@ class _CardsPageState extends State<CardsPage> {
         ),
       );
 
-  Map<String, String> _fixedFieldsOf(Map<String, Object?> c) => {
-        for (final k in EditDialog.fieldOrder) k: '${c[k] ?? ''}',
-      };
-
   Future<void> _details(Map<String, Object?> card) async {
     var c = Map<String, Object?>.from(card);
     await showDialog<void>(
       context: context,
       builder: (dialogContext) => StatefulBuilder(
         builder: (context, setDialogState) {
-          final extras = decodeExtra(c['extra']);
+          final works = decodeWorks(c['works']);
+          final img = s(c['image']);
+          final hasImg = img.isNotEmpty && File(img).existsSync();
           return AlertDialog(
-            title: Text('${c['name'] ?? 'Card'}'),
+            title: Text(s(c['name']).isEmpty ? 'Card' : s(c['name'])),
             content: SingleChildScrollView(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  if (c['image'] != null)
-                    Image.file(File('${c['image']}'),
-                        width: double.maxFinite, fit: BoxFit.contain),
+                  if (hasImg)
+                    GestureDetector(
+                      onTap: () => Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                              builder: (_) => ZoomPage(img))),
+                      child: Image.file(File(img),
+                          width: double.maxFinite, fit: BoxFit.contain),
+                    ),
+                  if (hasImg)
+                    const Padding(
+                      padding: EdgeInsets.only(top: 4),
+                      child: Text('Tap image to zoom',
+                          style:
+                              TextStyle(fontSize: 12, color: Colors.black54)),
+                    ),
                   const SizedBox(height: 8),
                   for (final k in EditDialog.fieldOrder)
-                    Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 2),
-                      child: Text(
-                          '${EditDialog.fieldLabels[k]}: ${c[k] ?? ''}'),
-                    ),
-                  if (extras.isNotEmpty) ...[
-                    const SizedBox(height: 8),
-                    const Text('Work',
-                        style: TextStyle(fontWeight: FontWeight.bold)),
-                    for (final e in extras.entries)
+                    if (k != 'name' && s(c[k]).isNotEmpty)
                       Padding(
                         padding: const EdgeInsets.symmetric(vertical: 2),
-                        child: Text('${e.key}: ${e.value}'),
+                        child: Text('${EditDialog.fieldLabels[k]}: ${s(c[k])}'),
                       ),
-                  ],
+                  if (works.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 2),
+                      child: Text('Work: ${works.join(', ')}'),
+                    ),
                 ],
               ),
             ),
@@ -294,15 +464,17 @@ class _CardsPageState extends State<CardsPage> {
                   final result = await showDialog<CardEditResult>(
                     context: context,
                     builder: (_) => EditDialog(
-                      fields: _fixedFieldsOf(c),
-                      extras: extras,
+                      fields: {
+                        for (final k in EditDialog.fieldOrder) k: s(c[k]),
+                      },
+                      works: works,
                       title: 'Edit card',
                     ),
                   );
                   if (result == null) return;
                   final updated = {
                     ...result.fields,
-                    'extra': jsonEncode(result.extras),
+                    'works': jsonEncode(result.works),
                   };
                   await Db.update(c['id'] as int, updated);
                   c = {...c, ...updated};
@@ -329,7 +501,7 @@ class _CardsPageState extends State<CardsPage> {
       builder: (ctx) => AlertDialog(
         title: const Text('Delete card?'),
         content: Text(
-            'Delete "${c['name'] ?? 'this card'}"? This cannot be undone.'),
+            'Delete "${s(c['name']).isEmpty ? 'this card' : s(c['name'])}"? This cannot be undone.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
@@ -348,6 +520,73 @@ class _CardsPageState extends State<CardsPage> {
     _load();
   }
 
+  Widget _sortBar() {
+    const opts = {
+      'newest': 'Newest first',
+      'name': 'Name A-Z',
+      'company': 'Company A-Z',
+      'work': 'Work A-Z',
+    };
+    return SizedBox(
+      height: 52,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+        children: [
+          for (final e in opts.entries)
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: ChoiceChip(
+                label: Text(e.value),
+                selected: _sort == e.key,
+                onSelected: (_) {
+                  _sort = e.key;
+                  setState(() => _rows = _buildRows(_cards));
+                },
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _header(_Header h) => Container(
+        width: double.infinity,
+        color: Colors.indigo.shade50,
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        child: Text('${h.title}  (${h.count})',
+            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+      );
+
+  Widget _tile(Map<String, Object?> c) {
+    final lines = [
+      s(c['company']),
+      s(c['designation']),
+      s(c['phone']),
+      s(c['email']),
+    ].where((e) => e.isNotEmpty).toList();
+    return Column(children: [
+      InkWell(
+        onTap: () => _details(c),
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(s(c['name']).isEmpty ? '(no name)' : s(c['name']),
+                  style: const TextStyle(
+                      fontSize: 16, fontWeight: FontWeight.w600)),
+              for (final l in lines)
+                Text(l, style: const TextStyle(color: Colors.black54)),
+            ],
+          ),
+        ),
+      ),
+      const Divider(height: 1),
+    ]);
+  }
+
   @override
   Widget build(BuildContext context) => Scaffold(
         appBar: AppBar(
@@ -357,37 +596,24 @@ class _CardsPageState extends State<CardsPage> {
             onChanged: (_) => _load(autoOpenSingle: true),
             onSubmitted: (_) => _load(autoOpenSingle: true),
             decoration: const InputDecoration(
-                hintText: 'Search name, company, or work...',
+                hintText: 'Search name, company, work...',
                 border: InputBorder.none),
           ),
-          actions: [
-            PopupMenuButton<String>(
-              icon: const Icon(Icons.sort),
-              tooltip: 'Sort',
-              initialValue: _sort,
-              onSelected: (v) {
-                setState(() => _sort = v);
-                _load();
-              },
-              itemBuilder: (_) => const [
-                PopupMenuItem(value: 'newest', child: Text('Newest first')),
-                PopupMenuItem(value: 'Name', child: Text('Name A-Z')),
-                PopupMenuItem(value: 'Company', child: Text('Company A-Z')),
-                PopupMenuItem(value: 'Work', child: Text('Work A-Z')),
-              ],
+        ),
+        body: Column(
+          children: [
+            _sortBar(),
+            Expanded(
+              child: ListView.builder(
+                itemCount: _rows.length,
+                itemBuilder: (_, i) {
+                  final r = _rows[i];
+                  if (r is _Header) return _header(r);
+                  return _tile(r as Map<String, Object?>);
+                },
+              ),
             ),
           ],
-        ),
-        body: ListView.builder(
-          itemCount: _cards.length,
-          itemBuilder: (_, i) {
-            final c = _cards[i];
-            return ListTile(
-              title: Text('${c['name']}'),
-              subtitle: Text('${c['company']} • ${c['phone']}'),
-              onTap: () => _details(c),
-            );
-          },
         ),
         floatingActionButton: FloatingActionButton(
           tooltip: 'Add card',
@@ -397,50 +623,62 @@ class _CardsPageState extends State<CardsPage> {
       );
 }
 
-class CardEditResult {
-  final Map<String, String> fields;
-  final Map<String, String> extras;
-  const CardEditResult(this.fields, this.extras);
+class ZoomPage extends StatelessWidget {
+  final String path;
+  const ZoomPage(this.path, {super.key});
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+        backgroundColor: Colors.black,
+        appBar: AppBar(
+          backgroundColor: Colors.black,
+          foregroundColor: Colors.white,
+        ),
+        body: Center(
+          child: InteractiveViewer(
+            minScale: 0.5,
+            maxScale: 8,
+            child: Image.file(File(path)),
+          ),
+        ),
+      );
 }
 
-class _ExtraField {
-  final TextEditingController key;
-  final TextEditingController value;
-  _ExtraField(String k, String v)
-      : key = TextEditingController(text: k),
-        value = TextEditingController(text: v);
-
-  void dispose() {
-    key.dispose();
-    value.dispose();
-  }
+class CardEditResult {
+  final Map<String, String> fields;
+  final List<String> works;
+  const CardEditResult(this.fields, this.works);
 }
 
 class EditDialog extends StatefulWidget {
   static const fieldOrder = [
     'name',
     'company',
+    'designation',
     'phone',
     'email',
     'website',
     'address',
+    'remark',
   ];
   static const fieldLabels = {
     'name': 'Name',
     'company': 'Company',
+    'designation': 'Designation',
     'phone': 'Phone',
     'email': 'Email',
     'website': 'Website',
     'address': 'Address',
+    'remark': 'Remark',
   };
 
   final Map<String, String> fields;
-  final Map<String, String> extras;
+  final List<String> works;
   final String title;
   const EditDialog({
     super.key,
     required this.fields,
-    this.extras = const {},
+    this.works = const [],
     this.title = 'Verify details',
   });
 
@@ -453,9 +691,9 @@ class _EditDialogState extends State<EditDialog> {
     for (final k in EditDialog.fieldOrder)
       k: TextEditingController(text: widget.fields[k] ?? ''),
   };
-  late final List<_ExtraField> _extras = [
-    for (final e in sortedExtras(widget.extras).entries)
-      _ExtraField(e.key, e.value),
+  late final List<TextEditingController> _works = [
+    for (final w in widget.works) TextEditingController(text: w),
+    if (widget.works.isEmpty) TextEditingController(),
   ];
 
   @override
@@ -463,22 +701,24 @@ class _EditDialogState extends State<EditDialog> {
     for (final c in _fields.values) {
       c.dispose();
     }
-    for (final e in _extras) {
-      e.dispose();
+    for (final c in _works) {
+      c.dispose();
     }
     super.dispose();
   }
 
-  CardEditResult _result() => CardEditResult(
-        {
-          for (final e in _fields.entries) e.key: e.value.text.trim(),
-        },
-        sortedExtras({
-          for (final e in _extras)
-            if (e.key.text.trim().isNotEmpty)
-              e.key.text.trim(): e.value.text.trim(),
-        }),
-      );
+  CardEditResult _result() {
+    final seen = <String>{};
+    final ws = <String>[];
+    for (final c in _works) {
+      final t = c.text.trim();
+      if (t.isNotEmpty && seen.add(t.toLowerCase())) ws.add(t);
+    }
+    return CardEditResult(
+      {for (final e in _fields.entries) e.key: e.value.text.trim()},
+      ws,
+    );
+  }
 
   @override
   Widget build(BuildContext context) => AlertDialog(
@@ -488,49 +728,47 @@ class _EditDialogState extends State<EditDialog> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               for (final e in _fields.entries)
-                TextField(
-                  controller: e.value,
-                  decoration:
-                      InputDecoration(labelText: EditDialog.fieldLabels[e.key]),
-                ),
+                if (e.key != 'remark')
+                  TextField(
+                    controller: e.value,
+                    decoration: InputDecoration(
+                        labelText: EditDialog.fieldLabels[e.key]),
+                  ),
               const SizedBox(height: 12),
               const Text('Work',
                   style: TextStyle(fontWeight: FontWeight.bold)),
-              for (var i = 0; i < _extras.length; i++)
+              for (var i = 0; i < _works.length; i++)
                 Row(
                   children: [
                     Expanded(
-                      flex: 2,
                       child: TextField(
-                        controller: _extras[i].key,
+                        controller: _works[i],
                         decoration:
-                            const InputDecoration(labelText: 'Field name'),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      flex: 3,
-                      child: TextField(
-                        controller: _extras[i].value,
-                        decoration: const InputDecoration(labelText: 'Value'),
+                            InputDecoration(labelText: 'Work ${i + 1}'),
                       ),
                     ),
                     IconButton(
                       icon: const Icon(Icons.remove_circle_outline),
                       onPressed: () {
                         setState(() {
-                          _extras.removeAt(i).dispose();
+                          _works.removeAt(i).dispose();
                         });
                       },
                     ),
                   ],
                 ),
               TextButton.icon(
-                onPressed: () => setState(() {
-                  _extras.add(_ExtraField('', ''));
-                }),
+                onPressed: () =>
+                    setState(() => _works.add(TextEditingController())),
                 icon: const Icon(Icons.add),
-                label: const Text('Add field'),
+                label: const Text('Add work'),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _fields['remark'],
+                maxLines: 3,
+                minLines: 1,
+                decoration: const InputDecoration(labelText: 'Remark'),
               ),
             ],
           ),
