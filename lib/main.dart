@@ -912,7 +912,6 @@ class _DetailPageState extends State<DetailPage> {
     );
   }
 }
-
 class ZoomPage extends StatelessWidget {
 final String path;
   const ZoomPage(this.path, {super.key});
