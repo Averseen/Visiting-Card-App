@@ -620,8 +620,7 @@ class _CardsPageState extends State<CardsPage> {
         ),
         body: Stack(children: [
           _body(),
-          
-Positioned(left: 8, right: 8, top: 4, child: _popup()),
+    Positioned(left: 8, right: 8, top: 4, child: _popup()),
         ]),
         floatingActionButton: FloatingActionButton(
           tooltip: 'Add card',
@@ -915,3 +914,269 @@ class _DetailPageState extends State<DetailPage> {
 }
 
 class ZoomPage extends StatelessWidget {
+final String path;
+  const ZoomPage(this.path, {super.key});
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+        backgroundColor: Colors.black,
+        appBar: AppBar(
+          backgroundColor: Colors.black,
+          foregroundColor: Colors.white,
+        ),
+        body: Center(
+          child: InteractiveViewer(
+            minScale: 0.5,
+            maxScale: 8,
+            child: Image.file(File(path)),
+          ),
+        ),
+      );
+}
+
+// ---------- What they sell/perform ----------
+class WorkDialog extends StatefulWidget {
+  const WorkDialog({super.key});
+  @override
+  State<WorkDialog> createState() => _WorkDialogState();
+}
+
+class _WorkDialogState extends State<WorkDialog> {
+  final _c = TextEditingController();
+  final List<String> _items = [];
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  void _add() {
+    final t = _c.text.trim();
+    if (t.isNotEmpty &&
+        !_items.any((e) => e.toLowerCase() == t.toLowerCase())) {
+      setState(() => _items.add(t));
+    }
+    _c.clear();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+        title: const Text('What they sell/perform?'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(children: [
+                Expanded(
+                  child: TextField(
+                    controller: _c,
+                    onSubmitted: (_) => _add(),
+                    decoration: const InputDecoration(
+                        hintText: 'e.g. Hydraulic cylinders'),
+                  ),
+                ),
+                TextButton(onPressed: _add, child: const Text('Add')),
+              ]),
+              const SizedBox(height: 12),
+              const Text('Added (stored under Work)',
+                  style: TextStyle(fontSize: 12, color: Colors.black54)),
+              const SizedBox(height: 4),
+              if (_items.isEmpty)
+                const Text('Nothing added yet',
+                    style: TextStyle(fontSize: 14, color: Colors.black54))
+              else
+                Wrap(
+                  spacing: 6,
+                  children: [
+                    for (final w in _items)
+                      InputChip(
+                        label: Text(w),
+                        onDeleted: () => setState(() => _items.remove(w)),
+                      ),
+                  ],
+                ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, <String>[]),
+              child: const Text('Skip')),
+          TextButton(
+            onPressed: () {
+              _add();
+              Navigator.pop(context, List<String>.from(_items));
+            },
+            child: const Text('Next'),
+          ),
+        ],
+      );
+}
+
+// ---------- Add / edit dialog ----------
+class CardEditResult {
+  final Map<String, String> fields;
+  final List<String> works;
+  const CardEditResult(this.fields, this.works);
+}
+
+class EditDialog extends StatefulWidget {
+  static const fieldOrder = [
+    'name',
+    'company',
+    'city',
+    'designation',
+    'phone',
+    'email',
+    'website',
+    'address',
+    'remark',
+  ];
+  static const fieldLabels = {
+    'name': 'Name',
+    'company': 'Company',
+    'city': 'City',
+    'designation': 'Designation',
+    'phone': 'Phone',
+    'email': 'Email',
+    'website': 'Website',
+    'address': 'Address',
+    'remark': 'Remark',
+  };
+
+  final Map<String, String> fields;
+  final List<String> works;
+  final String title;
+  const EditDialog({
+    super.key,
+    required this.fields,
+    this.works = const [],
+    this.title = 'Verify details',
+  });
+
+  @override
+  State<EditDialog> createState() => _EditDialogState();
+}
+
+class _EditDialogState extends State<EditDialog> {
+  late final Map<String, TextEditingController> _fields = {
+    for (final k in EditDialog.fieldOrder)
+      k: TextEditingController(text: widget.fields[k] ?? ''),
+  };
+  late final List<TextEditingController> _works = [
+    for (final w in widget.works) TextEditingController(text: w),
+    if (widget.works.isEmpty) TextEditingController(),
+  ];
+  late String _title =
+      (widget.fields['title'] == 'Mr.' || widget.fields['title'] == 'Mrs.')
+          ? widget.fields['title']!
+          : '';
+
+  @override
+  void dispose() {
+    for (final c in _fields.values) {
+      c.dispose();
+    }
+    for (final c in _works) {
+      c.dispose();
+    }
+    super.dispose();
+  }
+
+  CardEditResult _result() {
+    final seen = <String>{};
+    final ws = <String>[];
+    for (final c in _works) {
+      final t = c.text.trim();
+      if (t.isNotEmpty && seen.add(t.toLowerCase())) ws.add(t);
+    }
+    return CardEditResult(
+      {
+        'title': _title,
+        for (final e in _fields.entries) e.key: e.value.text.trim(),
+      },
+      ws,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+        title: Text(widget.title),
+        content: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              InputDecorator(
+                decoration: const InputDecoration(labelText: 'Title'),
+                child: DropdownButtonHideUnderline(
+                  child: DropdownButton<String>(
+                    value: _title,
+                    isDense: true,
+                    isExpanded: true,
+                    items: const [
+                      DropdownMenuItem(value: '', child: Text('-')),
+                      DropdownMenuItem(value: 'Mr.', child: Text('Mr.')),
+                      DropdownMenuItem(value: 'Mrs.', child: Text('Mrs.')),
+                    ],
+                    onChanged: (v) => setState(() => _title = v ?? ''),
+                  ),
+                ),
+              ),
+              for (final e in _fields.entries)
+                if (e.key != 'remark')
+                  TextField(
+                    controller: e.value,
+                    decoration: InputDecoration(
+                        labelText: EditDialog.fieldLabels[e.key]),
+                  ),
+              const SizedBox(height: 12),
+              const Text('Work'),
+              for (var i = 0; i < _works.length; i++)
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _works[i],
+                        decoration:
+                            InputDecoration(labelText: 'Work ${i + 1}'),
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.remove_circle_outline),
+                      onPressed: () {
+                        setState(() {
+                          _works.removeAt(i).dispose();
+                        });
+                      },
+                    ),
+                  ],
+                ),
+              TextButton.icon(
+                onPressed: () =>
+                    setState(() => _works.add(TextEditingController())),
+                icon: const Icon(Icons.add),
+                label: const Text('Add work'),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _fields['remark'],
+                maxLines: 3,
+                minLines: 1,
+                decoration: const InputDecoration(labelText: 'Remark'),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.pop(context, _result()),
+            child: const Text('Save'),
+          ),
+        ],
+      );
+}
