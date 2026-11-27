@@ -621,3 +621,297 @@ class _CardsPageState extends State<CardsPage> {
         body: Stack(children: [
           _body(),
           
+Positioned(left: 8, right: 8, top: 4, child: _popup()),
+        ]),
+        floatingActionButton: FloatingActionButton(
+          tooltip: 'Add card',
+          onPressed: _pickSource,
+          child: const Icon(Icons.add),
+        ),
+      );
+}
+
+// ---------- Companies under one work ----------
+class WorkPage extends StatefulWidget {
+  final String work;
+  const WorkPage(this.work, {super.key});
+  @override
+  State<WorkPage> createState() => _WorkPageState();
+}
+
+class _WorkPageState extends State<WorkPage> {
+  List<Map<String, Object?>> _items = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final all = await Db.all();
+    final k = widget.work.toLowerCase();
+    final items = all.where((c) => workKeys(c).contains(k)).toList();
+    items.sort((a, b) => cmp(s(a['company']), s(b['company'])));
+    if (mounted) setState(() => _items = items);
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+        appBar: AppBar(title: Text('${widget.work} (${_items.length})')),
+        body: ListView.builder(
+          itemCount: _items.length,
+          itemBuilder: (_, i) => CardTile(
+            card: _items[i],
+            onTap: () async {
+              await Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                      builder: (_) => DetailPage(_items[i]['id'] as int)));
+              _load();
+            },
+          ),
+        ),
+      );
+}
+
+// ---------- Full details ----------
+class DetailPage extends StatefulWidget {
+  final int id;
+  const DetailPage(this.id, {super.key});
+  @override
+  State<DetailPage> createState() => _DetailPageState();
+}
+
+class _DetailPageState extends State<DetailPage> {
+  Map<String, Object?>? _c;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final r = await Db.get(widget.id);
+    if (mounted) setState(() => _c = r);
+  }
+
+  void _msg(String t) =>
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(t)));
+
+  Future<void> _google(Map<String, Object?> c) async {
+    final qy = [s(c['company']), s(c['city'])].where((e) => e.isNotEmpty).join(' ');
+    if (qy.isEmpty) return;
+    final uri = Uri.parse(
+        'https://www.google.com/search?q=${Uri.encodeQueryComponent(qy)}');
+    try {
+      final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+      if (!ok && mounted) _msg('Could not open the browser');
+    } catch (_) {
+      if (mounted) _msg('Could not open the browser');
+    }
+  }
+
+  Future<void> _share(Map<String, Object?> c, List<String> works) async {
+    final t = <String>[co(c)];
+    final nm = fullName(c);
+    if (nm.isNotEmpty) {
+      t.add(s(c['designation']).isEmpty ? nm : '$nm (${s(c['designation'])})');
+    }
+    const labels = {
+      'phone': 'Phone',
+      'email': 'Email',
+      'website': 'Website',
+      'address': 'Address',
+    };
+    for (final e in labels.entries) {
+      final v = s(c[e.key]);
+      if (v.isNotEmpty) t.add('${e.value}: $v');
+    }
+    if (works.isNotEmpty) t.add('Work: ${works.join(', ')}');
+    if (s(c['remark']).isNotEmpty) t.add('Remark: ${s(c['remark'])}');
+    final files = <XFile>[];
+    for (final k in ['image', 'back_image']) {
+      final pth = s(c[k]);
+      if (pth.isNotEmpty && File(pth).existsSync()) files.add(XFile(pth));
+    }
+    try {
+      if (files.isEmpty) {
+        await Share.share(t.join('\n'));
+      } else {
+        await Share.shareXFiles(files, text: t.join('\n'));
+      }
+    } catch (_) {
+      if (mounted) _msg('Could not share');
+    }
+  }
+
+  Future<void> _addBack() async {
+    final path = await scanBackSide(context);
+    if (path == null) return;
+    await Db.update(widget.id, {'back_image': path});
+    _load();
+  }
+
+  Future<void> _edit(Map<String, Object?> c, List<String> works) async {
+    final result = await showDialog<CardEditResult>(
+      context: context,
+      builder: (_) => EditDialog(
+        fields: {
+          for (final k in EditDialog.fieldOrder) k: s(c[k]),
+          'title': s(c['title']),
+        },
+        works: works,
+        title: 'Edit card',
+      ),
+    );
+    if (result == null) return;
+    await Db.update(
+        widget.id, {...result.fields, 'works': jsonEncode(result.works)});
+    _load();
+  }
+
+  Future<void> _delete(Map<String, Object?> c) async {
+    final nm = fullName(c);
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete card?'),
+        content: Text(
+            'Delete "${nm.isEmpty ? co(c) : nm}"? This cannot be undone.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel')),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Delete')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    for (final k in ['image', 'back_image']) {
+      final pth = s(c[k]);
+      if (pth.isNotEmpty) {
+        try {
+          File(pth).deleteSync();
+        } catch (_) {}
+      }
+    }
+    await Db.delete(widget.id);
+    if (mounted) Navigator.pop(context);
+  }
+
+  Widget _img(String path) => GestureDetector(
+        onTap: () => Navigator.push(
+            context, MaterialPageRoute(builder: (_) => ZoomPage(path))),
+        child: Image.file(File(path),
+            width: double.infinity, fit: BoxFit.contain),
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    final c = _c;
+    if (c == null) {
+      return Scaffold(
+        appBar: AppBar(),
+        body: const Center(child: CircularProgressIndicator()),
+      );
+    }
+    final works = decodeWorks(c['works']);
+    final front = s(c['image']);
+    final back = s(c['back_image']);
+    final hasFront = front.isNotEmpty && File(front).existsSync();
+    final hasBack = back.isNotEmpty && File(back).existsSync();
+    final lines = <String>[];
+    final nm = fullName(c);
+    if (nm.isNotEmpty) lines.add('Name: $nm');
+    const fields = {
+      'designation': 'Designation',
+      'phone': 'Phone',
+      'email': 'Email',
+      'website': 'Website',
+      'address': 'Address',
+    };
+    for (final e in fields.entries) {
+      final v = s(c[e.key]);
+      if (v.isNotEmpty) lines.add('${e.value}: $v');
+    }
+    if (works.isNotEmpty) lines.add('Work: ${works.join(', ')}');
+    if (s(c['remark']).isNotEmpty) lines.add('Remark: ${s(c['remark'])}');
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Company details'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.share),
+            tooltip: 'Share',
+            onPressed: () => _share(c, works),
+          ),
+        ],
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          if (hasFront) _img(front),
+          if (hasFront)
+            const Padding(
+              padding: EdgeInsets.only(top: 4, bottom: 8),
+              child: Text('Tap image to zoom',
+                  style: TextStyle(fontSize: 12, color: Colors.black54)),
+            ),
+          if (hasBack) ...[
+            _img(back),
+            const Padding(
+              padding: EdgeInsets.only(top: 4),
+              child: Text('Back side (scanned copy only)',
+                  style: TextStyle(fontSize: 12, color: Colors.black54)),
+            ),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton(
+                  onPressed: _addBack, child: const Text('Retake back side')),
+            ),
+          ] else
+            Align(
+              alignment: Alignment.centerLeft,
+              child: OutlinedButton(
+                  onPressed: _addBack, child: const Text('Add back side')),
+            ),
+          const SizedBox(height: 8),
+          InkWell(
+            onTap: () => _google(c),
+            child: Text(co(c),
+                style: const TextStyle(
+                    fontSize: 17, decoration: TextDecoration.underline)),
+          ),
+          const Padding(
+            padding: EdgeInsets.only(top: 2, bottom: 8),
+            child: Text('Tap the company name to search on Google',
+                style: TextStyle(fontSize: 12, color: Colors.black54)),
+          ),
+          for (final l in lines)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 2),
+              child: Text(l, style: const TextStyle(fontSize: 15)),
+            ),
+          const SizedBox(height: 12),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              TextButton(
+                  onPressed: () => _delete(c), child: const Text('Delete')),
+              TextButton(
+                  onPressed: () => _edit(c, works),
+                  child: const Text('Edit')),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class ZoomPage extends StatelessWidget {
